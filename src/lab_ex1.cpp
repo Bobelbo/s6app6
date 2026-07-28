@@ -5,14 +5,18 @@
 // Espace anonyme pour les variables globales et partagées :
 namespace {
     int somme_;     // Contiendra la somme (devrait être 50005000).
+    std::mutex somme_lock_;
 }
 
 void accum(int d, int f)
 {
+    int local_somme = 0;
     // Ajoute les nombres de d à f (inclusivement) à la variable somme_.
     for (int i = d; i <= f; ++i) {
-        somme_ += i;
+        local_somme += i;
     }
+    std::lock_guard<std::mutex> lock(somme_lock_);
+    somme_ += local_somme;
 }
 
 int main(int argc, char** argv)
@@ -22,9 +26,9 @@ int main(int argc, char** argv)
     // La somme devrait être 50005000.
     // On répète le travail 100 fois pour vérifier si le résultat est constant.
     // On compte également le nombre d'essais valides.
-    
+
     int succes = 0;
-     
+
     for (int i = 0; i < 100; ++i) {
         somme_ = 0;
 
@@ -35,7 +39,7 @@ int main(int argc, char** argv)
         std::thread t4(accum, 7501, 10000);
 
         // À partir d'ici, les fils sont lancés et le contrôle est
-        // immédiatement de retour sur le fil principal alors que les fils 
+        // immédiatement de retour sur le fil principal alors que les fils
         // secondaires s'exécutent en parallèle.
         // Or, il faut attendre qu'ils aient terminé leur travail avant
         // d'afficher la somme.
@@ -52,7 +56,7 @@ int main(int argc, char** argv)
 
         // Chaque fil a terminé son travail, on peut maintenant afficher la
         // somme finale.
-        
+
         printf("Somme: %d\n", somme_);
 
         if (somme_ == 50005000) {
@@ -64,4 +68,3 @@ int main(int argc, char** argv)
 
     return 0;
 }
-
