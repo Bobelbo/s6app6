@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See https://go.microsoft.com/fwlink/?linkid=2090316 for license information.
 #-------------------------------------------------------------------------------------------------------------
 
-FROM debian:9
+FROM debian:12
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,8 +26,10 @@ RUN apt-get update \
     # Install C++ tools
     && apt-get -y install build-essential cmake cppcheck valgrind strace \
     #
-    #  Python3 packages for waveprop (along with pip extra step later)
+    #  Python3 packages (installed via apt: since Debian 12, the system Python
+    #  is "externally managed" (PEP 668) and pip3 install refuses to run)
     && apt-get -y install python3-dev python3-pip python3-tk \
+    && apt-get -y install python3-numpy cython3 \
     #
     # Create a non-root user to use if preferred - see https://aka.ms/vscode-remote/containers/non-root-user.
     && groupadd --gid $USER_GID $USERNAME \
@@ -41,11 +43,6 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
-
-# Install numpy
-RUN pip3 install Cython
-RUN pip3 install numpy
-RUN pip3 install tk
 
 # Switch back to dialog for any ad-hoc use of apt-get
 ENV DEBIAN_FRONTEND=dialog
