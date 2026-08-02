@@ -231,7 +231,7 @@ public:
   }
 
   /// \brief Returns if the internal queue is empty (true) or not.
-  bool queueEmpty() { return task_queue_.empty(); }
+  bool queueEmpty() { return task_queue_.is_empty(); }
 
 private:
   /// \brief Parse a task definition string and fills the references TaskDef
@@ -268,11 +268,12 @@ private:
   static void process_queue(TaskQueue *task_queue_,
                             std::atomic<bool> *should_run_) {
     while (should_run_->load(std::memory_order_relaxed)) {
-      if (!task_queue_->empty()) {
-        TaskDef task_def = task_queue_->front();
-        TaskRunner runner(task_def);
-        runner();
+      std::optional<TaskDef> task_def = task_queue_->front();
+      if (!task_def) {
+        continue;
       }
+      TaskRunner runner(*task_def);
+      runner();
     }
   }
 };
