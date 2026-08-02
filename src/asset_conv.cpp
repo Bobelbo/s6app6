@@ -270,7 +270,6 @@ private:
     while (should_run_->load(std::memory_order_relaxed)) {
       if (!task_queue_->empty()) {
         TaskDef task_def = task_queue_->front();
-        task_queue_->pop();
         TaskRunner runner(task_def);
         runner();
       }
@@ -278,25 +277,25 @@ private:
   }
 };
 
-int _match_arg(char **arg, Args args) {
+int _match_arg(char **arg, Args *args) {
   if (strcmp(arg[0], "-t") == 0) {
-    args.num_threads = atoi(arg[1]);
-    if (args.num_threads <= 0) {
+    args->num_threads = atoi(arg[1]);
+    if (args->num_threads <= 0) {
       std::cerr << "Error: Invalid number of threads: '" << arg[1] << "'."
                 << std::endl;
       return 1;
     }
-    std::cerr << "Setting number of threads to " << args.num_threads << std::endl;
+    std::cerr << "Setting number of threads to " << args->num_threads << std::endl;
     return 0;
   } else if (strcmp(arg[0], "-i") == 0) {
-    args.file_in = arg[1];
-    args.is_stdin = false;
+    args->file_in = arg[1];
+    args->is_stdin = false;
     return 0;
   }
   return 1;
 }
 
-int parse_args(int argc, char **argv, Args &args) {
+int parse_args(int argc, char **argv, Args *args) {
   if (argc <= 1) {
     std::cerr << "Usage: Without arguments, reads from stdin." << std::endl;
     return 0;
@@ -322,7 +321,7 @@ int parse_args(int argc, char **argv, Args &args) {
 int main(int argc, char **argv) {
   using namespace gif643;
   Args program_args = {false, DEF_NUM_THREADS, ""};
-  parse_args(argc, argv, program_args);
+  parse_args(argc, argv, &program_args);
 
   std::ifstream file_in;
 
