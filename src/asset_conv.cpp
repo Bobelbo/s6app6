@@ -9,7 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <memory>
+#include <memory> 
 #include <queue>
 #include <string>
 #include <thread>
@@ -21,6 +21,7 @@ namespace gif643 {
 typedef struct {
   bool is_stdin;
   uint16_t num_threads;
+  bool verbose;
   std::string file_in;
 } Args;
 
@@ -106,9 +107,11 @@ public:
 class TaskRunner {
 private:
   TaskDef task_def_;
+  bool verbose_;
 
 public:
-  TaskRunner(const TaskDef &task_def) : task_def_(task_def) {}
+  TaskRunner(const TaskDef &task_def, bool verbose = false)
+      : task_def_(task_def), verbose_(verbose) {}
 
   void operator()() {
     const std::string &fname_in = task_def_.fname_in;
@@ -119,7 +122,9 @@ public:
     const size_t image_size = height * stride;
     const float &scale = float(width) / ORG_WIDTH;
 
-    std::cerr << "Running for " << fname_in << "..." << std::endl;
+    if (verbose_) {
+      std::cout << "Running for " << fname_in << "..." << std::endl;
+    }
 
     NSVGimage *image_in = nullptr;
     NSVGrasterizer *rast = nullptr;
@@ -156,7 +161,9 @@ public:
     nsvgDelete(image_in);
     nsvgDeleteRasterizer(rast);
 
-    std::cerr << std::endl << "Done for " << fname_in << "." << std::endl;
+    if (verbose_) {
+      std::cout << std::endl << "Done for " << fname_in << "." << std::endl;
+    }
   }
 };
 
@@ -188,6 +195,8 @@ private:
   std::atomic<bool> should_run_; // Used to signal the end of the processor to
                                  // threads.
 
+  bool verbose_;
+
   std::vector<std::thread> queue_threads_;
 
 public:
@@ -197,7 +206,8 @@ public:
   /// These threads are joined and stopped at the destruction of the instance.
   ///
   /// \param n_threads: Number of threads. Defaults to DEF_NUM_THREADS.
-  Processor(int n_threads = DEF_NUM_THREADS) : should_run_(true) {
+  Processor(int n_threads = DEF_NUM_THREADS, bool verbose = false)
+      : should_run_(true), verbose_(verbose) {
     if (n_threads <= 0) {
       std::cerr << "Warning, incorrect number of threads (" << n_threads
                 << "), setting to " << DEF_NUM_THREADS << std::endl;
@@ -205,8 +215,8 @@ public:
     }
 
     for (int i = 0; i < n_threads; ++i) {
-      queue_threads_.push_back(
-          std::thread(process_queue, &task_queue_, &should_run_));
+      queue_threads_.push_back(std::thread(process_queue, &task_queue_,
+                                           &should_run_, verbose_));
     }
   }
 
@@ -225,7 +235,9 @@ public:
     std::queue<TaskDef> queue;
     TaskDef def;
     if (parse_task(line_org, def)) {
-      std::cerr << "Queueing task '" << line_org << "'." << std::endl;
+      if (verbose_) {
+        std::cout << "Queueing task '" << line_org << "'." << std::endl;
+      }
       task_queue_.push(def);
     }
   }
@@ -266,52 +278,58 @@ private:
 
   /// \brief Queue processing thread function.
   static void process_queue(TaskQueue *task_queue_,
-                            std::atomic<bool> *should_run_) {
+                            std::atomic<bool> *should_run_, bool verbose) {
     while (should_run_->load(std::memory_order_relaxed)) {
       std::optional<TaskDef> task_def = task_queue_->front();
       if (!task_def) {
         continue;
       }
-      TaskRunner runner(*task_def);
+      TaskRunner runner(*task_def, verbose);
       runner();
     }
   }
 };
 
-int _match_arg(char **arg, Args *args) {
-  if (strcmp(arg[0], "-t") == 0) {
-    args->num_threads = atoi(arg[1]);
-    if (args->num_threads <= 0) {
-      std::cerr << "Error: Invalid number of threads: '" << arg[1] << "'."
-                << std::endl;
-      return 1;
-    }
-    std::cerr << "Setting number of threads to " << args->num_threads << std::endl;
-    return 0;
-  } else if (strcmp(arg[0], "-i") == 0) {
-    args->file_in = arg[1];
-    args->is_stdin = false;
-    return 0;
-  }
-  return 1;
-}
-
 int parse_args(int argc, char **argv, Args *args) {
   if (argc <= 1) {
-    std::cerr << "Usage: Without arguments, reads from stdin." << std::endl;
+    if (args->verbose) {
+      std::cout << "Usage: Without arguments, reads from stdin." << std::endl;
+    }
     return 0;
   }
 
-  for (uint8_t i = 1; i < argc; i += 2) {
-    if (i + 1 >= argc) {
-      std::cerr << "Error: Argument '" << argv[i]
-                << "' has no corresponding value. Ignoring..." << std::endl;
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "-t") == 0) {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: Argument '" << argv[i]
+                  << "' has no corresponding value." << std::endl;
+        return 1;
+      }
+      args->num_threads = atoi(argv[++i]);
+      if (args->num_threads <= 0) {
+        std::cerr << "Error: Invalid number of threads: '" << argv[i] << "'."
+                  << std::endl;
+        return 1;
+      }
+    } else if (strcmp(argv[i], "-i") == 0) {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: Argument '" << argv[i]
+                  << "' has no corresponding value." << std::endl;
+        return 1;
+      }
+      args->file_in = argv[++i];
+      args->is_stdin = false;
+    } else if (strcmp(argv[i], "-v") == 0) {
+      args->verbose = true;
+    } else {
+      std::cerr << "Error: Unknown argument '" << argv[i] << "'." << std::endl;
       return 1;
     }
-    if (_match_arg(&argv[i], args)) {
-      std::cerr << "Error: Unknown argument '" << argv[i] << std::endl;
-      return 1;
-    }
+  }
+
+  if (args->verbose) {
+    std::cout << "Setting number of threads to " << args->num_threads
+              << std::endl;
   }
 
   return 0;
@@ -321,7 +339,7 @@ int parse_args(int argc, char **argv, Args *args) {
 
 int main(int argc, char **argv) {
   using namespace gif643;
-  Args program_args = {false, DEF_NUM_THREADS, ""};
+  Args program_args = {false, DEF_NUM_THREADS, false, ""};
   parse_args(argc, argv, &program_args);
 
   std::ifstream file_in;
@@ -330,17 +348,19 @@ int main(int argc, char **argv) {
     file_in.open(program_args.file_in);
     if (file_in.is_open()) {
       std::cin.rdbuf(file_in.rdbuf());
-      std::cerr << "Using " << program_args.file_in << "..." << std::endl;
+      if (program_args.verbose) {
+        std::cout << "Using " << program_args.file_in << "..." << std::endl;
+      }
     } else {
       std::cerr << "Error: Cannot open '" << program_args.file_in
                 << "', using stdin (press CTRL-D for EOF)." << std::endl;
     }
-  } else {
-    std::cerr << "Using stdin (press CTRL-D for EOF)." << std::endl;
+  } else if (program_args.verbose) {
+    std::cout << "Using stdin (press CTRL-D for EOF)." << std::endl;
   }
 
   // TODO (done): change the number of threads from args.
-  Processor proc(program_args.num_threads);
+  Processor proc(program_args.num_threads, program_args.verbose);
 
   while (!std::cin.eof()) {
 
