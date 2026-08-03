@@ -5,11 +5,13 @@
 
 #include "safeQueue.hpp"
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory> 
+#include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
@@ -47,6 +49,15 @@ const int DEF_NUM_THREADS = 1; // Default value, changed by argv.
 using PNGDataVec = std::vector<char>;
 using PNGDataPtr = std::shared_ptr<PNGDataVec>;
 using TaskQueue = SafeQueue<TaskDef>;
+
+struct WorkEntry {
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool done = false;
+  PNGDataPtr png_data;
+};
+
+using WorkMap = std::unordered_map<std::string, std::shared_ptr<WorkEntry>>;
 
 /// \brief Wraps callbacks from stbi_image_write
 //
@@ -108,14 +119,16 @@ class TaskRunner {
 private:
   TaskDef task_def_;
   bool verbose_;
+  PNGDataPtr png_data_;
 
 public:
   TaskRunner(const TaskDef &task_def, bool verbose = false)
       : task_def_(task_def), verbose_(verbose) {}
 
+  PNGDataPtr getData() const { return png_data_; }
+
   void operator()() {
     const std::string &fname_in = task_def_.fname_in;
-    const std::string &fname_out = task_def_.fname_out;
     const size_t &width = task_def_.size;
     const size_t &height = task_def_.size;
     const size_t stride = width * BPP;
@@ -146,11 +159,7 @@ public:
       // Compress it ...
       PNGWriter writer;
       writer(width, height, BPP, &image_data[0], stride);
-
-      // Write it out ...
-      std::ofstream file_out(fname_out, std::ofstream::binary);
-      auto data = writer.getData();
-      file_out.write(&(data->front()), data->size());
+      png_data_ = writer.getData();
 
     } catch (std::runtime_error e) {
       std::cerr << "Exception while processing " << fname_in << ": " << e.what()
@@ -166,6 +175,15 @@ public:
     }
   }
 };
+
+bool writePNG(const PNGDataPtr &data, const std::string &fname_out) {
+  if (!data) {
+    return false;
+  }
+  std::ofstream file_out(fname_out, std::ofstream::binary);
+  file_out.write(&(data->front()), data->size());
+  return file_out.good();
+}
 
 /// \brief A class that organizes the processing of SVG assets in PNG files.
 ///
@@ -187,10 +205,9 @@ private:
   // The tasks to run queue (FIFO).
   TaskQueue task_queue_;
 
-  // The cache hash map (TODO). Note that we use the string definition as the //
-  // key.
-  using PNGHashMap = std::unordered_map<std::string, PNGDataPtr>;
-  PNGHashMap png_cache_;
+  // Deduplication / result cache keyed by "source;size".
+  std::mutex work_map_mutex_;
+  WorkMap work_map_;
 
   std::atomic<bool> should_run_; // Used to signal the end of the processor to
                                  // threads.
@@ -215,8 +232,7 @@ public:
     }
 
     for (int i = 0; i < n_threads; ++i) {
-      queue_threads_.push_back(std::thread(process_queue, &task_queue_,
-                                           &should_run_, verbose_));
+      queue_threads_.push_back(std::thread([this]() { process_queue(); }));
     }
   }
 
@@ -277,15 +293,59 @@ private:
   }
 
   /// \brief Queue processing thread function.
-  static void process_queue(TaskQueue *task_queue_,
-                            std::atomic<bool> *should_run_, bool verbose) {
-    while (should_run_->load(std::memory_order_relaxed)) {
-      std::optional<TaskDef> task_def = task_queue_->front();
+  void process_queue() {
+    while (should_run_.load(std::memory_order_relaxed)) {
+      std::optional<TaskDef> task_def = task_queue_.front();
       if (!task_def) {
         continue;
       }
-      TaskRunner runner(*task_def, verbose);
+      processTask(*task_def);
+    }
+  }
+
+  /// \brief Processes one task, deduplicating work by (source, size).
+  ///
+  /// The first task for a key rasterizes the SVG and publishes the result;
+  /// concurrent duplicates wait on the entry's condition variable and then
+  /// only write the PNG to their own output file.
+  void processTask(const TaskDef &def) {
+    const std::string key = def.fname_in + ";" + std::to_string(def.size);
+
+    bool is_worker;
+    std::shared_ptr<WorkEntry> entry;
+    {
+      std::lock_guard<std::mutex> lock(work_map_mutex_);
+      auto it = work_map_.find(key);
+      if (it == work_map_.end()) {
+        entry = std::make_shared<WorkEntry>();
+        work_map_[key] = entry;
+        is_worker = true;
+      } else {
+        entry = it->second;
+        is_worker = false;
+      }
+    }
+
+    if (is_worker) {
+      TaskRunner runner(def, verbose_);
       runner();
+      {
+        std::lock_guard<std::mutex> lock(entry->mtx);
+        entry->png_data = runner.getData();
+        entry->done = true;
+      }
+      entry->cv.notify_all();
+      writePNG(entry->png_data, def.fname_out);
+    } else {
+      if (verbose_) {
+        std::cout << "Task '" << def.fname_in << "' (size " << def.size
+                  << ") already processed, reusing result." << std::endl;
+      }
+      std::unique_lock<std::mutex> lock(entry->mtx);
+      entry->cv.wait(lock, [&entry]() { return entry->done; });
+      PNGDataPtr data = entry->png_data;
+      lock.unlock();
+      writePNG(data, def.fname_out);
     }
   }
 };
